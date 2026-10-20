@@ -1,0 +1,13 @@
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+.pub-cache/
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore

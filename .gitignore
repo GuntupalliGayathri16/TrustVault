@@ -11,3 +11,10 @@ build/
 !.env.example
 *.jks
 *.keystore
+
+# Local test and backup artifacts
+*.zip
+*.backup
+trustvault-test.txt
+trustvault_main.txt
+zip-ui-check/

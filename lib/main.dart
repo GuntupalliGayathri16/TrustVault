@@ -8,16 +8,20 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-void main() {
-  runApp(const TrustVaultApp());
-}
+void main() => runApp(const TrustVaultApp());
 
 const String cognitoDomain =
     'https://us-east-16bj40uxfi.auth.us-east-1.amazoncognito.com';
 const String clientId = '24tonblo0hgmp5hdad6s11jesv';
-const String redirectUri = 'http://localhost:52100/';
+const String redirectUri =
+    'https://staging.d1g1njsg5owizr.amplifyapp.com/';
 const String presignEndpoint =
     'https://y76x3dol83.execute-api.us-east-1.amazonaws.com/presign';
+
+const teal = Color(0xFF087F75);
+const darkTeal = Color(0xFF075E59);
+const pageBg = Color(0xFFF3F7FB);
+const borderColor = Color(0xFFDCE8F2);
 
 class TrustVaultApp extends StatelessWidget {
   const TrustVaultApp({super.key});
@@ -28,10 +32,9 @@ class TrustVaultApp extends StatelessWidget {
       title: 'TrustVault',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0F766E),
-        ),
         useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: teal),
+        scaffoldBackgroundColor: pageBg,
       ),
       home: const TrustVaultHome(),
     );
@@ -67,6 +70,9 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
   bool isLoadingDocuments = false;
 
   String? accessToken;
+  String? idToken;
+  String? userEmail;
+  String? userName;
   String? authMessage;
   String? documentsError;
 
@@ -76,17 +82,45 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
   void initState() {
     super.initState();
 
-    accessToken =
-        html.window.sessionStorage['trustvault_access_token'];
+    accessToken = html.window.sessionStorage['trustvault_access_token'];
+    idToken = html.window.sessionStorage['trustvault_id_token'];
+    _loadProfile();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _handleAuthCallback();
     });
   }
 
+  void _loadProfile() {
+    try {
+      final token = idToken;
+      if (token == null || token.isEmpty) return;
+
+      final parts = token.split('.');
+      if (parts.length != 3) return;
+
+      final payload = utf8.decode(
+        base64Url.decode(base64Url.normalize(parts[1])),
+      );
+      final claims = jsonDecode(payload) as Map<String, dynamic>;
+      final email = claims['email']?.toString();
+
+      if (!mounted) return;
+      setState(() {
+        userEmail = email;
+        userName = claims['name']?.toString() ??
+            claims['preferred_username']?.toString() ??
+            (email != null && email.contains('@')
+                ? email.split('@').first
+                : null);
+      });
+    } catch (_) {
+      // Profile details are optional; the dashboard remains usable.
+    }
+  }
+
   void showMessage(String message) {
     if (!mounted) return;
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
@@ -98,24 +132,20 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
       byteCount,
       (_) => random.nextInt(256),
     );
-
     return base64Url.encode(bytes).replaceAll('=', '');
   }
 
   Future<void> signIn() async {
     final verifier = randomUrlSafe(32);
     final state = randomUrlSafe(24);
-
     final challenge = base64Url
         .encode(sha256.convert(utf8.encode(verifier)).bytes)
         .replaceAll('=', '');
 
-    html.window.sessionStorage['trustvault_pkce_verifier'] =
-        verifier;
+    html.window.sessionStorage['trustvault_pkce_verifier'] = verifier;
     html.window.sessionStorage['trustvault_oauth_state'] = state;
 
-    final loginUri =
-        Uri.parse('$cognitoDomain/oauth2/authorize').replace(
+    final loginUri = Uri.parse('$cognitoDomain/oauth2/authorize').replace(
       queryParameters: {
         'client_id': clientId,
         'response_type': 'code',
@@ -138,7 +168,6 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
 
     if (authError != null) {
       if (!mounted) return;
-
       setState(() {
         authMessage =
             uri.queryParameters['error_description'] ?? authError;
@@ -147,15 +176,12 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
       return;
     }
 
-    // No OAuth callback: use the session already stored in this tab.
     if (code == null) {
       if (accessToken != null && accessToken!.isNotEmpty) {
+        _loadProfile();
         await loadDocuments(showErrors: false);
       }
-
-      if (mounted) {
-        setState(() => authChecking = false);
-      }
+      if (mounted) setState(() => authChecking = false);
       return;
     }
 
@@ -175,10 +201,8 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
         returnedState != expectedState ||
         verifier == null) {
       if (!mounted) return;
-
       setState(() {
-        authMessage =
-            'Login verification failed. Please sign in again.';
+        authMessage = 'Login verification failed. Please sign in again.';
         authChecking = false;
       });
       return;
@@ -205,33 +229,37 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
         );
       }
 
-      final result =
-          jsonDecode(response.body) as Map<String, dynamic>;
+      final result = jsonDecode(response.body) as Map<String, dynamic>;
       final token = result['access_token'] as String?;
+      final receivedIdToken = result['id_token'] as String?;
 
       if (token == null || token.isEmpty) {
         throw Exception('Cognito did not return an access token.');
       }
 
       html.window.sessionStorage['trustvault_access_token'] = token;
+
+      if (receivedIdToken != null && receivedIdToken.isNotEmpty) {
+        html.window.sessionStorage['trustvault_id_token'] =
+            receivedIdToken;
+        idToken = receivedIdToken;
+      }
+
       html.window.sessionStorage.remove('trustvault_pkce_verifier');
       html.window.sessionStorage.remove('trustvault_oauth_state');
 
       if (!mounted) return;
-
       setState(() {
         accessToken = token;
         authMessage = null;
         authChecking = false;
       });
 
+      _loadProfile();
       showMessage('Signed in successfully.');
-
-      // Load existing S3 files after login.
       await loadDocuments();
     } catch (error) {
       if (!mounted) return;
-
       setState(() {
         authMessage = error.toString();
         authChecking = false;
@@ -241,11 +269,15 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
 
   void signOut() {
     html.window.sessionStorage.remove('trustvault_access_token');
+    html.window.sessionStorage.remove('trustvault_id_token');
     html.window.sessionStorage.remove('trustvault_pkce_verifier');
     html.window.sessionStorage.remove('trustvault_oauth_state');
 
     setState(() {
       accessToken = null;
+      idToken = null;
+      userEmail = null;
+      userName = null;
       documents.clear();
       documentsError = null;
     });
@@ -264,7 +296,6 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
     Map<String, dynamic> body,
   ) async {
     final token = accessToken;
-
     if (token == null || token.isEmpty) {
       throw Exception('Please sign in again.');
     }
@@ -280,21 +311,17 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
 
     if (response.statusCode != 200) {
       throw Exception(
-        'API request failed (${response.statusCode}): '
-        '${response.body}',
+        'API request failed (${response.statusCode}): ${response.body}',
       );
     }
 
     final decoded = jsonDecode(response.body);
-
     if (decoded is! Map<String, dynamic>) {
       throw Exception('Unexpected response from the TrustVault API.');
     }
-
     return decoded;
   }
 
-  // Fetch the current user's saved documents from S3 through Lambda.
   Future<void> loadDocuments({bool showErrors = true}) async {
     if (accessToken == null || accessToken!.isEmpty) return;
     if (isLoadingDocuments) return;
@@ -314,57 +341,45 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
         throw Exception('The API response does not contain a file list.');
       }
 
-      final loadedDocuments = <VaultDocument>[];
+      final loaded = <VaultDocument>[];
 
       for (final item in rawFiles) {
         if (item is! Map) continue;
 
         final key = item['key']?.toString() ?? '';
         final name = item['name']?.toString() ?? 'Unnamed file';
-
         final rawSize = item['size'];
         final size = rawSize is num
             ? rawSize.toInt()
             : int.tryParse(rawSize?.toString() ?? '') ?? 0;
-
         final rawDate = item['lastModified']?.toString();
-        final modifiedDate =
-            rawDate == null ? null : DateTime.tryParse(rawDate);
+        final date = rawDate == null ? null : DateTime.tryParse(rawDate);
 
         if (key.isEmpty) continue;
 
-        loadedDocuments.add(
+        loaded.add(
           VaultDocument(
             name: name,
             size: size,
             s3Key: key,
-            lastModified: modifiedDate,
+            lastModified: date,
           ),
         );
       }
 
       if (!mounted) return;
-
       setState(() {
         documents
           ..clear()
-          ..addAll(loadedDocuments);
+          ..addAll(loaded);
         documentsError = null;
       });
     } catch (error) {
       if (!mounted) return;
-
-      setState(() {
-        documentsError = error.toString();
-      });
-
-      if (showErrors) {
-        showMessage('Could not load documents: $error');
-      }
+      setState(() => documentsError = error.toString());
+      if (showErrors) showMessage('Could not load documents: $error');
     } finally {
-      if (mounted) {
-        setState(() => isLoadingDocuments = false);
-      }
+      if (mounted) setState(() => isLoadingDocuments = false);
     }
   }
 
@@ -380,16 +395,12 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
     }
 
     final result = reader.result;
-
     if (result is! String) {
       throw Exception('Unexpected file data type: ${result.runtimeType}');
     }
 
     final commaIndex = result.indexOf(',');
-
-    if (commaIndex < 0) {
-      throw Exception('Invalid file data URL.');
-    }
+    if (commaIndex < 0) throw Exception('Invalid file data URL.');
 
     try {
       return Uint8List.fromList(
@@ -424,7 +435,6 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
       if (selected == null || selected.isEmpty) return;
 
       final file = selected.first;
-
       if (!mounted) return;
       setState(() => isBusy = true);
 
@@ -434,40 +444,28 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
         status: 'Uploading...',
       );
 
-      setState(() {
-        documents.insert(0, document);
-      });
+      setState(() => documents.insert(0, document));
 
       try {
         await uploadToS3(file, document);
 
         if (mounted) {
-          setState(() {
-            document.status = 'Uploaded successfully';
-          });
+          setState(() => document.status = 'Uploaded successfully');
         }
 
         showMessage('${file.name} uploaded successfully.');
-
-        // Refresh from S3 so the list reflects saved files.
         await loadDocuments();
       } catch (error) {
         if (mounted) {
-          setState(() {
-            document.status = 'Upload failed';
-          });
+          setState(() => document.status = 'Upload failed');
         }
-
         showMessage('Upload failed: $error');
       }
     } catch (error) {
       showMessage('File selection failed: $error');
     } finally {
       picker.remove();
-
-      if (mounted) {
-        setState(() => isBusy = false);
-      }
+      if (mounted) setState(() => isBusy = false);
     }
   }
 
@@ -505,16 +503,15 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
       throw Exception('The API response is missing uploadUrl or key.');
     }
 
-    final uploadResponse = await http.put(
+    final response = await http.put(
       Uri.parse(uploadUrl),
       headers: {'Content-Type': contentType},
       body: bytes,
     );
 
-    if (uploadResponse.statusCode != 200 &&
-        uploadResponse.statusCode != 204) {
+    if (response.statusCode != 200 && response.statusCode != 204) {
       throw Exception(
-        'S3 upload failed with status ${uploadResponse.statusCode}.',
+        'S3 upload failed with status ${response.statusCode}.',
       );
     }
 
@@ -525,12 +522,10 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
     if (isBusy) return;
 
     final key = document.s3Key;
-
     if (accessToken == null || accessToken!.isEmpty) {
       showMessage('Please sign in again before downloading.');
       return;
     }
-
     if (key == null || key.isEmpty) {
       showMessage('File key is missing. Refresh your documents.');
       return;
@@ -541,11 +536,10 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
     try {
       final data = await callVaultApi({
         'action': 'download',
-        'key': key,
+        'documentId': key,
       });
 
       final downloadUrl = data['downloadUrl'] as String?;
-
       if (downloadUrl == null || downloadUrl.isEmpty) {
         throw Exception('The API did not return a download URL.');
       }
@@ -555,9 +549,7 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
     } catch (error) {
       showMessage('Download failed: $error');
     } finally {
-      if (mounted) {
-        setState(() => isBusy = false);
-      }
+      if (mounted) setState(() => isBusy = false);
     }
   }
 
@@ -571,18 +563,15 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
 
   String formatDate(DateTime? date) {
     if (date == null) return 'Date unavailable';
-
     final local = date.toLocal();
     final day = local.day.toString().padLeft(2, '0');
     final month = local.month.toString().padLeft(2, '0');
-
     return '$day/$month/${local.year}';
   }
 
   IconData getFileIcon(String name) {
-    final extension = name.contains('.')
-        ? name.split('.').last.toLowerCase()
-        : '';
+    final extension =
+        name.contains('.') ? name.split('.').last.toLowerCase() : '';
 
     switch (extension) {
       case 'pdf':
@@ -609,40 +598,320 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
     }
   }
 
+  Widget _statCard(
+    IconData icon,
+    String label,
+    String value,
+    double availableWidth,
+  ) {
+    final rawWidth = availableWidth < 500
+        ? availableWidth
+        : (availableWidth - 48) / 3;
+    final width = rawWidth.clamp(180.0, 320.0).toDouble();
+
+    return SizedBox(
+      width: width,
+      child: Card(
+        elevation: 0,
+        color: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: const BorderSide(color: borderColor),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              CircleAvatar(
+                backgroundColor: const Color(0xFFE0F5F0),
+                child: Icon(icon, color: teal),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        color: Colors.blueGrey,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      value,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _profileCard(String displayName, String email) {
+    return Card(
+      elevation: 0,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: borderColor),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          children: [
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'User Profile',
+                style: TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(height: 22),
+            const CircleAvatar(
+              radius: 43,
+              backgroundColor: teal,
+              child: Icon(
+                Icons.person_rounded,
+                size: 52,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              displayName,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 6),
+            SelectableText(
+              email,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.blueGrey),
+            ),
+            const Divider(height: 30),
+            const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.verified_user_outlined, color: teal),
+              title: Text('Account'),
+              subtitle: Text('Signed in with Cognito'),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.folder_outlined, color: teal),
+              title: const Text('Your documents'),
+              subtitle: Text('${documents.length} saved files'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _quickInfoCard() {
+    return Card(
+      elevation: 0,
+      color: Colors.white,
+      child: const Padding(
+        padding: EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Quick Info',
+              style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 16),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.shield_outlined, color: teal),
+              title: Text('Secure'),
+              subtitle: Text(
+                'Private documents with short-lived download links.',
+              ),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.cloud_outlined, color: teal),
+              title: Text('AWS storage'),
+              subtitle: Text('Files are managed by your TrustVault backend.'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _documentSection() {
+    return Card(
+      elevation: 0,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: borderColor),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'My Documents',
+                    style: TextStyle(
+                      fontSize: 21,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Refresh documents',
+                  onPressed: isBusy || isLoadingDocuments
+                      ? null
+                      : () => loadDocuments(),
+                  icon: const Icon(Icons.refresh_rounded, color: teal),
+                ),
+                Text('${documents.length} files'),
+              ],
+            ),
+            if (isLoadingDocuments)
+              const Padding(
+                padding: EdgeInsets.all(20),
+                child: CircularProgressIndicator(),
+              )
+            else if (documentsError != null)
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    Text(
+                      'Could not load documents: $documentsError',
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                    TextButton(
+                      onPressed: () => loadDocuments(),
+                      child: const Text('Try again'),
+                    ),
+                  ],
+                ),
+              )
+            else if (documents.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(28),
+                child: Column(
+                  children: [
+                    Icon(
+                      Icons.folder_open_rounded,
+                      size: 44,
+                      color: Colors.blueGrey,
+                    ),
+                    SizedBox(height: 10),
+                    Text('No saved documents found'),
+                    SizedBox(height: 4),
+                    Text(
+                      'Your uploaded files will appear here.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.blueGrey),
+                    ),
+                  ],
+                ),
+              )
+            else
+              ...documents.map((document) {
+                final success =
+                    document.status == 'Uploaded successfully';
+
+                return Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFFE3EBF3)),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: ListTile(
+                    leading: Icon(
+                      getFileIcon(document.name),
+                      color: teal,
+                      size: 30,
+                    ),
+                    title: Text(
+                      document.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${formatSize(document.size)}'
+                      ' � ${formatDate(document.lastModified)}'
+                      '\n${document.status}',
+                      style: TextStyle(
+                        color: success ? Colors.green.shade700 : Colors.blueGrey,
+                      ),
+                    ),
+                    isThreeLine: true,
+                    trailing: IconButton(
+                      tooltip: 'Download ${document.name}',
+                      onPressed: isBusy || !success
+                          ? null
+                          : () => downloadDocument(document),
+                      icon: const Icon(Icons.download_rounded, color: teal),
+                    ),
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final signedIn = accessToken != null && accessToken!.isNotEmpty;
+    final displayName = userName ?? 'TrustVault User';
+    final email = userEmail ?? 'Email unavailable';
+    final totalBytes = documents.fold<int>(
+      0,
+      (total, document) => total + document.size,
+    );
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F7FA),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F766E),
+        backgroundColor: darkTeal,
         foregroundColor: Colors.white,
         title: const Row(
           children: [
-            Icon(Icons.shield_rounded, size: 28),
+            Icon(Icons.verified_user_rounded, size: 30),
             SizedBox(width: 10),
             Text(
               'TrustVault',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 22,
-              ),
+              style: TextStyle(fontWeight: FontWeight.bold),
             ),
           ],
         ),
         actions: [
           if (authChecking)
             const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16),
-              child: Center(
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
+              padding: EdgeInsets.all(16),
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
                 ),
               ),
             )
@@ -663,312 +932,294 @@ class _TrustVaultHomeState extends State<TrustVaultHome> {
             ),
         ],
       ),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 900),
-          child: ListView(
-            padding: const EdgeInsets.all(24),
-            children: [
-              const Text(
-                'Your secure document space',
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF163344),
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Keep your important documents organised in one place.',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.blueGrey,
-                ),
-              ),
-              const SizedBox(height: 24),
-              if (authMessage != null)
-                Card(
-                  color: const Color(0xFFFFF0F0),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text(
-                      'Authentication message: $authMessage',
-                      style: const TextStyle(color: Colors.red),
-                    ),
-                  ),
-                ),
-              Card(
-                elevation: 0,
-                color: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                  side: const BorderSide(color: Color(0xFFE0E7EF)),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(28),
-                  child: Column(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(18),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE6F5F2),
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: const Icon(
-                          Icons.cloud_upload_rounded,
-                          size: 48,
-                          color: Color(0xFF0F766E),
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      const Text(
-                        'Add documents to TrustVault',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 21,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF163344),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        signedIn
-                            ? 'Choose a document to upload securely to AWS.'
-                            : 'Sign in to upload documents securely.',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.blueGrey),
-                      ),
-                      const SizedBox(height: 22),
-                      SizedBox(
-                        width: 240,
-                        child: FilledButton.icon(
-                          onPressed: isBusy || authChecking || !signedIn
-                              ? null
-                              : selectAndUpload,
-                          icon: isBusy
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
-                                )
-                              : const Icon(Icons.attach_file_rounded),
-                          label: Text(
-                            isBusy ? 'Processing...' : 'Select File & Upload',
-                          ),
-                          style: FilledButton.styleFrom(
-                            backgroundColor: const Color(0xFF0F766E),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 22,
-                              vertical: 15,
+      body: authChecking
+          ? const Center(child: CircularProgressIndicator())
+          : !signedIn
+              ? Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 480),
+                    child: Card(
+                      margin: const EdgeInsets.all(24),
+                      color: Colors.white,
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const CircleAvatar(
+                              radius: 42,
+                              backgroundColor: Color(0xFFE0F5F0),
+                              child: Icon(
+                                Icons.lock_rounded,
+                                size: 42,
+                                color: teal,
+                              ),
                             ),
-                          ),
+                            const SizedBox(height: 20),
+                            const Text(
+                              'Your secure document space',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 25,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF102A43),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            const Text(
+                              'Sign in to securely upload and manage '
+                              'your personal documents.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.blueGrey),
+                            ),
+                            const SizedBox(height: 24),
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.icon(
+                                onPressed: signIn,
+                                icon: const Icon(Icons.login),
+                                label: const Text('Sign in securely'),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: teal,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.all(16),
+                                ),
+                              ),
+                            ),
+                            if (authMessage != null) ...[
+                              const SizedBox(height: 16),
+                              Text(
+                                authMessage!,
+                                style: const TextStyle(color: Colors.red),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      Text(
-                        signedIn ? 'Signed in' : 'Not signed in',
-                        style: TextStyle(
-                          color: signedIn
-                              ? Colors.green.shade700
-                              : Colors.blueGrey,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 28),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'My Documents',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF163344),
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Refresh documents',
-                    onPressed: signedIn &&
-                            !isLoadingDocuments &&
-                            !isBusy
-                        ? () => loadDocuments()
-                        : null,
-                    icon: const Icon(Icons.refresh_rounded),
-                  ),
-                  Chip(
-                    avatar: const Icon(Icons.folder_rounded, size: 18),
-                    label: Text('${documents.length} files'),
-                  ),
-                ],
-              ),
-              if (isLoadingDocuments)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 18),
-                  child: Center(
-                    child: CircularProgressIndicator(),
-                  ),
-                ),
-              if (documentsError != null)
-                Card(
-                  color: const Color(0xFFFFF0F0),
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Could not load saved files.',
-                          style: TextStyle(
-                            color: Colors.red.shade800,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(documentsError!),
-                        const SizedBox(height: 8),
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: TextButton.icon(
-                            onPressed: isLoadingDocuments
-                                ? null
-                                : () => loadDocuments(),
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('Try again'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              const SizedBox(height: 8),
-              if (!isLoadingDocuments && documents.isEmpty)
-                Card(
-                  elevation: 0,
-                  color: Colors.white,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 38,
-                    ),
-                    child: Column(
-                      children: [
-                        const Icon(
-                          Icons.folder_open_rounded,
-                          size: 54,
-                          color: Colors.blueGrey,
-                        ),
-                        const SizedBox(height: 14),
-                        Text(
-                          signedIn
-                              ? 'No saved documents found'
-                              : 'Sign in to view your documents',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                            fontSize: 17,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          'Your saved files will appear here.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.blueGrey),
-                        ),
-                      ],
                     ),
                   ),
                 )
-              else
-                ...documents.map((document) {
-                  final success =
-                      document.status == 'Uploaded successfully';
-                  final failed = document.status == 'Upload failed';
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    final wide = constraints.maxWidth >= 1050;
 
-                  return Card(
-                    elevation: 0,
-                    color: Colors.white,
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: ListTile(
-                      leading: Icon(
-                        getFileIcon(document.name),
-                        color: const Color(0xFF0F766E),
-                        size: 30,
-                      ),
-                      title: Text(
-                        document.name,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        '${formatSize(document.size)}'
-                        ' • ${formatDate(document.lastModified)}'
-                        ' • ${document.status}',
-                        style: TextStyle(
-                          color: success
-                              ? Colors.green.shade700
-                              : failed
-                                  ? Colors.red
-                                  : Colors.blueGrey,
-                        ),
-                      ),
-                      trailing: success
-                          ? IconButton(
-                              tooltip: 'Download ${document.name}',
-                              onPressed: isBusy
-                                  ? null
-                                  : () => downloadDocument(document),
-                              icon: const Icon(
-                                Icons.download_rounded,
-                                color: Color(0xFF0F766E),
-                              ),
-                            )
-                          : Icon(
-                              failed ? Icons.error : Icons.cloud_upload,
-                              color: failed ? Colors.red : Colors.blueGrey,
+                    final dashboard = ListView(
+                      padding: const EdgeInsets.all(20),
+                      children: [
+                        Card(
+                          elevation: 0,
+                          color: const Color(0xFFDDF7F1),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(22),
+                            child: Row(
+                              children: [
+                                const CircleAvatar(
+                                  radius: 34,
+                                  backgroundColor: teal,
+                                  child: Icon(
+                                    Icons.person_rounded,
+                                    size: 42,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Welcome, $displayName',
+                                        style: const TextStyle(
+                                          fontSize: 23,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFF102A43),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        email,
+                                        style: const TextStyle(
+                                          color: Color(0xFF486581),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 10),
+                                      const Row(
+                                        children: [
+                                          Icon(
+                                            Icons.verified_rounded,
+                                            size: 17,
+                                            color: Colors.green,
+                                          ),
+                                          SizedBox(width: 6),
+                                          Text(
+                                            'Signed in',
+                                            style: TextStyle(
+                                              color: Colors.green,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
                             ),
-                    ),
-                  );
-                }),
-              const SizedBox(height: 16),
-              const Card(
-                color: Color(0xFFFFF7E8),
-                elevation: 0,
-                child: Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text(
-                    'Security note: documents use short-lived presigned '
-                    'URLs. Keep your S3 bucket private and never place '
-                    'AWS access keys in Flutter.',
-                    style: TextStyle(
-                      height: 1.5,
-                      color: Color(0xFF78350F),
-                    ),
-                  ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children: [
+                            _statCard(
+                              Icons.folder_rounded,
+                              'My Documents',
+                              '${documents.length}',
+                              constraints.maxWidth,
+                            ),
+                            _statCard(
+                              Icons.storage_rounded,
+                              'Storage Used',
+                              formatSize(totalBytes),
+                              constraints.maxWidth,
+                            ),
+                            _statCard(
+                              Icons.shield_rounded,
+                              'Account Status',
+                              'Active',
+                              constraints.maxWidth,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        Card(
+                          elevation: 0,
+                          color: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            side: const BorderSide(color: borderColor),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              children: [
+                                const Icon(
+                                  Icons.cloud_upload_rounded,
+                                  size: 52,
+                                  color: teal,
+                                ),
+                                const SizedBox(height: 12),
+                                const Text(
+                                  'Secure document upload',
+                                  style: TextStyle(
+                                    fontSize: 21,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                const Text(
+                                  'Choose a file to upload securely to AWS.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.blueGrey),
+                                ),
+                                const SizedBox(height: 18),
+                                SizedBox(
+                                  width: 280,
+                                  child: FilledButton.icon(
+                                    onPressed: isBusy
+                                        ? null
+                                        : selectAndUpload,
+                                    icon: isBusy
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: Colors.white,
+                                            ),
+                                          )
+                                        : const Icon(Icons.attach_file),
+                                    label: Text(
+                                      isBusy
+                                          ? 'Processing...'
+                                          : 'Select File & Upload',
+                                    ),
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: teal,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.all(15),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        _documentSection(),
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE1F5F2),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.shield_rounded, color: teal),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Security note: documents use short-lived '
+                                  'presigned URLs. Keep your S3 bucket private '
+                                  'and never place AWS access keys in Flutter.',
+                                  style: TextStyle(height: 1.5),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        const Center(
+                          child: Text(
+                            'TrustVault � Secure document management',
+                            style: TextStyle(
+                              color: Colors.blueGrey,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+
+                    if (!wide) return dashboard;
+
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 7, child: dashboard),
+                        SizedBox(
+                          width: 300,
+                          child: ListView(
+                            padding: const EdgeInsets.fromLTRB(0, 20, 20, 20),
+                            children: [
+                              _profileCard(displayName, email),
+                              const SizedBox(height: 14),
+                              _quickInfoCard(),
+                            ],
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
-              ),
-              const SizedBox(height: 20),
-              const Center(
-                child: Text(
-                  'TrustVault • Secure document management',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.blueGrey,
-                    fontSize: 12,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }
